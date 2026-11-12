@@ -8,6 +8,8 @@ ARG BASE_IMAGE=cgr.dev/chainguard/wolfi-base:latest
 # ---- web UI ------------------------------------------------------------------
 FROM ${BUILD_IMAGE} AS web
 ARG NODE_VERSION=22
+# Hardened/corporate images often default to a non-root user; apk needs root.
+USER root
 RUN apk add --no-cache nodejs-${NODE_VERSION} npm
 # Trust the image's own certificate store when npm downloads packages.
 ENV NODE_USE_SYSTEM_CA=1
@@ -25,6 +27,9 @@ ARG PYTHON_VERSION=3.12
 ARG INSTALL_CLAUDE_CODE=true
 ARG INSTALL_WHISPER=true
 
+# Install as root even if the base image defaults to a non-root user; the app itself runs as
+# the unprivileged `skippy` user set further down.
+USER root
 RUN apk add --no-cache python-${PYTHON_VERSION} bash curl tzdata ripgrep
 
 # Python, httpx and Hugging Face downloads use the image's system certificate store instead of
@@ -40,7 +45,7 @@ RUN python${PYTHON_VERSION} -m venv /opt/venv \
  && pip install -r requirements.txt \
  && if [ "$INSTALL_WHISPER" = "true" ]; then pip install -r requirements-voice.txt; fi
 
-RUN adduser -D -u 1000 -h /home/skippy skippy && mkdir -p /data /vaults && chown skippy:skippy /data /vaults
+RUN (adduser -D -u 1000 -h /home/skippy skippy || adduser -D -h /home/skippy skippy) && mkdir -p /data /vaults && chown skippy:skippy /data /vaults
 USER skippy
 ENV HOME=/home/skippy PATH=/home/skippy/.local/bin:/opt/venv/bin:$PATH
 
