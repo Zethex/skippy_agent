@@ -1,0 +1,4 @@
+# Keep LF everywhere: this code runs in Linux containers, even when checked out on Windows.
+* text=auto eol=lf
+*.png binary
+*.jpg binary
