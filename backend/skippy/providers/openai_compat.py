@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 
 import httpx
 
@@ -14,6 +15,15 @@ from ..vault import run_tool, tool_specs
 from .base import ChatRequest, Provider
 
 MAX_TOOL_ROUNDS = 8
+
+
+def _ssl_context() -> ssl.SSLContext | bool:
+    """Trust the image's system certificate store (SSL_CERT_FILE, set in the Dockerfile), so a
+    corporate base image's CA certificates apply. SKIPPY_CA_BUNDLE still overrides it."""
+    bundle = os.environ.get("SKIPPY_CA_BUNDLE") or os.environ.get("SSL_CERT_FILE")
+    if bundle and os.path.isfile(bundle):
+        return ssl.create_default_context(cafile=bundle)
+    return True
 
 
 def _truthy(value, default=True) -> bool:
@@ -54,8 +64,7 @@ class OpenAICompatProvider(Provider):
         if self.transport is not None:
             kwargs["transport"] = self.transport
         else:
-            # A corporate CA bundle can be mounted and pointed to with SKIPPY_CA_BUNDLE.
-            kwargs["verify"] = (os.environ.get("SKIPPY_CA_BUNDLE") or True) if self.verify_tls else False
+            kwargs["verify"] = _ssl_context() if self.verify_tls else False
         return httpx.AsyncClient(**kwargs)
 
     def _headers(self) -> dict:

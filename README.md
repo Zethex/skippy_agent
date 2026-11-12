@@ -60,10 +60,27 @@ Use `.env.work.example` (it sets `INSTALL_CLAUDE_CODE=false`), then add **Portke
 Settings: gateway URL, API key, and under *Routing options* whichever of virtual key, config ID
 or provider your gateway uses. *Test connection* fetches the model list.
 
-Behind a corporate proxy: set `HTTPS_PROXY`, and if the gateway uses an internal CA, drop the
-PEM in `config/` and point `SKIPPY_CA_BUNDLE` at it. The Whisper model is fetched from
+Behind a corporate proxy: set `HTTPS_PROXY`. The Whisper model is fetched from
 huggingface.co on first use; if that is blocked, set `INSTALL_WHISPER=false` or copy a model
 into the `skippy-data` volume under `whisper/`.
+
+### Base image
+
+The image is built on [Wolfi](https://github.com/wolfi-dev) (`cgr.dev/chainguard/wolfi-base`).
+To build from your own registry, for example a corporate mirror whose images already carry the
+company's CA certificates, set these in `.env`:
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SKIPPY_BASE_IMAGE` | `cgr.dev/chainguard/wolfi-base:latest` | Runtime image |
+| `SKIPPY_BUILD_IMAGE` | same as `SKIPPY_BASE_IMAGE` | Image that builds the web UI |
+| `SKIPPY_PYTHON_VERSION` | `3.12` | Wolfi `python-<version>` package |
+| `SKIPPY_NODE_VERSION` | `22` | Wolfi `nodejs-<version>` package |
+| `SKIPPY_IMAGE` | `skippy:local` | Name and tag of the built image |
+
+Any Wolfi-based image with `apk` works. Python, httpx, pip, npm and Hugging Face downloads all
+use the image's system certificate store, so certificates baked into the base image are
+trusted without extra setup.
 
 ## How Skippy uses the vault
 

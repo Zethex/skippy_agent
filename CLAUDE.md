@@ -17,6 +17,11 @@ Repo: https://github.com/Zethex/skippy_agent
 - Git has `core.autocrlf=true` globally; `.gitattributes` forces LF because CRLF breaks scripts in
   Linux containers (e.g. the `tests/fake_claude.py` shebang).
 
+- The image is Wolfi-based; base images are build args (`SKIPPY_BASE_IMAGE`, `SKIPPY_BUILD_IMAGE`
+  in `.env`) so the work PC can use a corporate mirror. Don't add CA-cert handling: the base
+  image carries its certs, and `SSL_CERT_FILE` / `NODE_USE_SYSTEM_CA` make Python, httpx and npm
+  use them. Python lives in a venv at `/opt/venv`.
+
 ## Commands
 
 ```bash
@@ -24,9 +29,9 @@ Repo: https://github.com/Zethex/skippy_agent
 docker compose up -d --build
 docker compose logs -f skippy
 
-# backend tests
-MSYS_NO_PATHCONV=1 docker run --rm -v "$(pwd -W)/backend:/src:ro" python:3.12-slim \
-  sh -c "cp -r /src /b && cd /b && pip install -q -r requirements.txt pytest && PYTHONPATH=. pytest -q tests"
+# backend tests, inside the built Wolfi image (build it first)
+MSYS_NO_PATHCONV=1 docker run --rm --user root --entrypoint sh -v "$(pwd -W)/backend:/src:ro" skippy:local \
+  -c "cp -r /src /b && cd /b && pip install -q pytest && PYTHONPATH=. pytest -q tests"
 
 # frontend type-check/build happens in the Dockerfile's `web` stage
 docker compose build
