@@ -4,7 +4,7 @@ import { Markdown } from "./Markdown";
 
 type Tab = "todos" | "capture" | "vault";
 
-export function Brain({ status, refreshKey, onClose }: { status: Status; refreshKey: number; onClose: () => void }) {
+export function Brain({ status, refreshKey, onClose, onSetup }: { status: Status; refreshKey: number; onClose: () => void; onSetup: () => void }) {
   const [tab, setTab] = useState<Tab>("todos");
   const vault = status.vault;
 
@@ -15,10 +15,10 @@ export function Brain({ status, refreshKey, onClose }: { status: Status; refresh
         <button className="icon-btn only-narrow" onClick={onClose} aria-label="Close second brain">✕</button>
       </header>
       {!vault.available ? (
-        <p className="hint">
-          No vault is mounted. Set <code>OBSIDIAN_VAULT</code> in <code>.env</code> to your vault folder and restart
-          the container.
-        </p>
+        <div className="stack">
+          <p className="hint">No Obsidian vault is connected yet. Pick one and Skippy can keep your todos, captures and notes there.</p>
+          <button className="btn" onClick={onSetup}>Choose a vault</button>
+        </div>
       ) : (
         <>
           <div className="tabs" role="tablist">

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from "re
 import { api, streamChat, type Conversation, type Status } from "./api";
 import { Brain } from "./Brain";
 import { Markdown } from "./Markdown";
+import { Settings, type Section } from "./Settings";
 import { useRecorder } from "./useRecorder";
 
 type Msg = { role: "user" | "assistant"; content: string; tools?: { name: string; detail: string }[]; error?: string; pending?: boolean };
@@ -40,6 +41,7 @@ export default function App() {
   const [brainTick, setBrainTick] = useState(0);
   const [showBrain, setShowBrain] = useState(false);
   const [showNav, setShowNav] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState<Section | null>(null);
   const abort = useRef<AbortController | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -47,18 +49,23 @@ export default function App() {
 
   const refreshConversations = useCallback(() => api.conversations().then(setConversations).catch(() => {}), []);
 
-  useEffect(() => {
-    api.status().then((s) => {
+  const loadStatus = useCallback(() => api.status().then((s) => {
       setStatus(s);
       const saved = stored("skippy.provider", "");
-      const pick = s.providers.find((p) => p.id === saved && p.available)?.id ?? s.default_provider;
+      const pick = s.providers.find((p) => p.id === saved && p.available)?.id ?? s.default_provider ?? s.providers[0]?.id ?? null;
       setProvider(pick);
       const models = s.providers.find((p) => p.id === pick)?.models ?? [];
       const savedModel = stored("skippy.model", "");
       setModel(models.includes(savedModel) ? savedModel : models[0] ?? null);
+    return s;
+  }), []);
+
+  useEffect(() => {
+    loadStatus().then((s) => {
+      if (!s.providers.some((p) => p.available)) setSettingsOpen("providers");
     }).catch((e) => setLoadError(e.message));
     void refreshConversations();
-  }, [refreshConversations]);
+  }, [loadStatus, refreshConversations]);
 
   useEffect(() => { scroller.current?.scrollTo({ top: scroller.current.scrollHeight }); }, [messages]);
   useEffect(() => {
@@ -159,11 +166,15 @@ export default function App() {
             </li>
           ))}
         </ul>
-        <dl className="systems">
-          <div><dt>AI</dt><dd className={current?.available ? "up" : "down"}>{current?.label ?? "Not configured"}</dd></div>
-          <div><dt>Vault</dt><dd className={status.vault.available ? "up" : "down"}>{status.vault.available ? `${status.vault.notes} notes${status.vault.writable ? "" : ", read-only"}` : "Not mounted"}</dd></div>
-          <div><dt>Voice</dt><dd className={status.voice.available ? "up" : "down"}>{status.voice.available ? `Whisper ${status.voice.model}` : "Not installed"}</dd></div>
-        </dl>
+        <div className="systems">
+          <button onClick={() => setSettingsOpen("providers")}><span className="k">AI</span><span className={current?.available ? "v up" : "v down"}>{current?.available ? current.label : "Set up an AI"}</span></button>
+          <button onClick={() => setSettingsOpen("vault")}><span className="k">Vault</span><span className={status.vault.available ? "v up" : "v down"}>{status.vault.available ? `${status.vault.name} · ${status.vault.notes} note${status.vault.notes === 1 ? "" : "s"}${status.vault.writable ? "" : ", read-only"}` : "Choose a vault"}</span></button>
+          <button onClick={() => setSettingsOpen("general")}><span className="k">Voice</span><span className={status.voice.available ? "v up" : "v down"}>{status.voice.available ? `Whisper ${status.voice.model}` : "Not installed"}</span></button>
+        </div>
+        <button className="btn ghost wide gear" onClick={() => setSettingsOpen("providers")}>
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1" strokeLinecap="round" /></svg>
+          Settings
+        </button>
       </nav>
 
       <main className="stage">
@@ -190,6 +201,12 @@ export default function App() {
               <Core state={coreState} size="lg" />
               <h2>{name ? `What are we fixing today, ${name}?` : "What are we fixing today?"}</h2>
               <p>Type or talk. I can read and write your Obsidian vault, keep your todo list, and remember what we decide.</p>
+              {(!status.providers.some((p) => p.available) || !status.vault.available) && (
+                <div className="setup">
+                  {!status.providers.some((p) => p.available) && <button className="btn" onClick={() => setSettingsOpen("providers")}>Connect an AI</button>}
+                  {!status.vault.available && <button className="btn ghost" onClick={() => setSettingsOpen("vault")}>Choose your Obsidian vault</button>}
+                </div>
+              )}
               <div className="starters">
                 {STARTERS.map((s) => (
                   <button key={s} onClick={() => { setDraft(s); input.current?.focus(); }}>{s.trim()}{s.endsWith(" ") ? "…" : ""}</button>
@@ -221,7 +238,8 @@ export default function App() {
           {notice && <p className="notice" role="status">{notice}</p>}
           {!current?.available && (
             <p className="notice warn">
-              {current ? `${current.label} is not ready: ${current.reason}.` : "No AI provider is configured. Add credentials to .env and restart the container."}
+              {current ? `${current.label} is not ready: ${current.reason}.` : "No AI provider is set up yet."}{" "}
+              <button className="link" onClick={() => setSettingsOpen("providers")}>Open settings</button>
             </p>
           )}
           <div className={`box${recorder.recording ? " live" : ""}`}>
@@ -259,7 +277,11 @@ export default function App() {
         </footer>
       </main>
 
-      <Brain status={status} refreshKey={brainTick} onClose={() => setShowBrain(false)} />
+      <Brain status={status} refreshKey={brainTick} onClose={() => setShowBrain(false)} onSetup={() => setSettingsOpen("vault")} />
+      {settingsOpen && (
+        <Settings status={status} initial={settingsOpen} onClose={() => setSettingsOpen(null)}
+          onSaved={() => { void loadStatus(); setBrainTick((n) => n + 1); }} />
+      )}
     </div>
   );
 }

@@ -34,12 +34,15 @@ class OpenAICompatProvider(Provider):
         self.headers = {k: str(v) for k, v in (cfg.get("headers") or {}).items() if v not in (None, "")}
         self.use_tools = _truthy(cfg.get("tools"))
         self.verify_tls = _truthy(cfg.get("verify_tls"))
+        self.auth_header = cfg.get("auth_header") or ""  # header that must carry the key (Portkey)
         if not self.use_tools:
             self.tool_style = "none"
 
     def availability(self) -> tuple[bool, str]:
         if not self.base_url:
             return False, "No base URL configured"
+        if self.auth_header and not self.headers.get(self.auth_header):
+            return False, "No API key configured"
         if not (self.api_key or self.headers):
             return False, "No API key configured"
         if not self.models:
@@ -55,10 +58,43 @@ class OpenAICompatProvider(Provider):
             kwargs["verify"] = (os.environ.get("SKIPPY_CA_BUNDLE") or True) if self.verify_tls else False
         return httpx.AsyncClient(**kwargs)
 
-    async def stream(self, req: ChatRequest):
+    def _headers(self) -> dict:
         headers = {"Content-Type": "application/json", **self.headers}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
+    async def check(self) -> dict:
+        """List the gateway's models; if it has no /models, send a one-token request instead."""
+        if not self.base_url:
+            return {"ok": False, "message": "Enter a base URL"}
+        if not (self.api_key or self.headers) or (self.auth_header and not self.headers.get(self.auth_header)):
+            return {"ok": False, "message": "Enter an API key"}
+        try:
+            async with self._client() as client:
+                resp = await client.get(f"{self.base_url}/models", headers=self._headers(), timeout=20)
+                if resp.status_code < 400:
+                    try:
+                        found = sorted({str(m["id"]) for m in resp.json().get("data") or [] if m.get("id")})
+                    except (ValueError, AttributeError, TypeError):
+                        found = []
+                    if found:
+                        return {"ok": True, "message": f"Connected. The gateway offers {len(found)} models.", "models": found}
+                if resp.status_code in (401, 403):
+                    return {"ok": False, "message": f"The key was rejected ({resp.status_code}): {resp.text[:300]}"}
+                if not self.models:
+                    return {"ok": False, "message": "Connected, but the gateway doesn't list its models. Enter at least one model name."}
+                resp = await client.post(f"{self.base_url}/chat/completions", headers=self._headers(), timeout=60,
+                                         json={"model": self.models[0], "max_tokens": 5,
+                                               "messages": [{"role": "user", "content": "Reply with OK"}]})
+                if resp.status_code >= 400:
+                    return {"ok": False, "message": f"{resp.status_code} from the gateway: {resp.text[:300]}"}
+                return {"ok": True, "message": f"Connected. {self.models[0]} answered."}
+        except httpx.HTTPError as exc:
+            return {"ok": False, "message": f"Could not reach {self.base_url}: {exc!r}"}
+
+    async def stream(self, req: ChatRequest):
+        headers = self._headers()
         messages = [{"role": "system", "content": req.system}, *req.messages]
         vault = req.vault if self.use_tools and req.vault and req.vault.available else None
         payload_base = {"model": req.model or self.models[0], "stream": True}

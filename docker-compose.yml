@@ -8,12 +8,15 @@ services:
     image: skippy:local
     container_name: skippy
     env_file: .env
+    environment:
+      SKIPPY_VAULTS_HOST: ${SKIPPY_VAULTS_DIR:-${OBSIDIAN_VAULT:-./vaults}}   # shown in Settings
     ports:
       # Bound to localhost only: Skippy has no login and can write to your vault.
       - "127.0.0.1:${SKIPPY_PORT:-8642}:8642"
     volumes:
       - skippy-data:/data                      # chat history + the Whisper model
-      - ${OBSIDIAN_VAULT:?Set OBSIDIAN_VAULT in .env to your vault folder}:/vault
+      # A parent folder holding your Obsidian vault(s). Pick the vault itself in Settings.
+      - ${SKIPPY_VAULTS_DIR:-${OBSIDIAN_VAULT:-./vaults}}:/vaults
       - ./config:/app/config:ro                # provider list, editable without a rebuild
     restart: unless-stopped
 

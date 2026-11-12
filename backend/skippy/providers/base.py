@@ -42,5 +42,10 @@ class Provider:
         return {"id": self.id, "label": self.label, "kind": self.kind,
                 "models": self.models, "available": ok, "reason": reason}
 
+    async def check(self) -> dict:
+        """Settings' "Test connection": {"ok": bool, "message": str, "models"?: [...]}."""
+        ok, reason = self.availability()
+        return {"ok": ok, "message": reason or "Looks configured"}
+
     def stream(self, req: ChatRequest) -> AsyncIterator[dict]:
         raise NotImplementedError

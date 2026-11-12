@@ -38,6 +38,8 @@ class Vault:
         return self.root.is_dir()
 
     def _resolve(self, rel: str) -> Path:
+        if not self.available:
+            raise VaultError("No vault is selected. Pick one in Settings.")
         rel = (rel or "").strip().replace("\\", "/").lstrip("/")
         if not rel:
             raise VaultError("A note path is required")
@@ -56,9 +58,9 @@ class Vault:
 
     def _need_write(self) -> None:
         if not self.available:
-            raise VaultError("No vault is mounted")
+            raise VaultError("No vault is selected. Pick one in Settings.")
         if not self.writable:
-            raise VaultError("The vault is read-only (SKIPPY_VAULT_WRITE=false)")
+            raise VaultError("The vault is read-only (turn on editing in Settings)")
 
     def iter_notes(self):
         for base, dirs, files in os.walk(self.root):
