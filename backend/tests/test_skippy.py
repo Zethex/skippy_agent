@@ -145,3 +145,73 @@ def test_claude_code_provider(env):
     assert text == "You said: hello there | tools=Read,Glob,Grep,Edit,Write"
     assert {"type": "tool", "name": "Read", "detail": "Skippy/Todos.md"} in events
     assert events[-1] == {"type": "done"}
+
+
+def test_settings_seeded_and_secrets_hidden(env, tmp_path):
+    client, _, _ = env
+    s = client.get("/api/settings").json()
+    assert s["vault"]["path"] == "vault"
+    portkey = next(p for p in s["providers"] if p["id"] == "portkey")
+    assert portkey["kind"] == "portkey" and portkey["api_key_set"] and "api_key" not in portkey
+    assert "pk-test" not in json.dumps(s)
+    stored = json.loads((tmp_path / "data" / "settings.json").read_text())
+    assert next(p for p in stored["providers"] if p["id"] == "portkey")["api_key"] == "pk-test"
+
+
+def test_settings_update_applies_live_and_keeps_secrets(env, tmp_path):
+    client, app, _ = env
+    s = client.get("/api/settings").json()
+    for p in s["providers"]:
+        if p["id"] == "portkey":
+            p["models"] = ["new-model"]
+            p["virtual_key"] = "vk-1"          # new secret
+        else:
+            p["enabled"] = False
+    s["profile"]["user_name"] = "Zethe"
+    client.put("/api/settings", json=s)
+    status = client.get("/api/status").json()
+    assert status["user_name"] == "Zethe" and [p["id"] for p in status["providers"]] == ["portkey"]
+    assert status["providers"][0]["models"] == ["new-model"]
+    stored = json.loads((tmp_path / "data" / "settings.json").read_text())
+    pk = next(p for p in stored["providers"] if p["id"] == "portkey")
+    assert pk["api_key"] == "pk-test" and pk["virtual_key"] == "vk-1"   # untouched secret kept
+    assert app.state.registry.get("portkey").headers["x-portkey-virtual-key"] == "vk-1"
+
+    s = client.get("/api/settings").json()
+    next(p for p in s["providers"] if p["id"] == "portkey")["api_key"] = ""   # explicit clear
+    client.put("/api/settings", json=s)
+    assert not client.get("/api/status").json()["providers"][0]["available"]
+
+
+def test_vault_picker(env, tmp_path):
+    client, _, _ = env
+    assert client.get("/api/settings/vaults").json() == [{"path": "vault", "name": "vault"}]
+    created = client.post("/api/settings/vaults", json={"name": "Work Brain"}).json()["path"]
+    assert created == "Work Brain" and (tmp_path / "Work Brain" / ".obsidian").is_dir()
+    assert {v["path"] for v in client.get("/api/settings/vaults").json()} == {"vault", "Work Brain"}
+    assert client.put("/api/settings", json={"vault": {"path": "Work Brain", "writable": False}}).status_code == 200
+    status = client.get("/api/status").json()
+    assert status["vault"]["name"] == "Work Brain" and not status["vault"]["writable"]
+    assert client.post("/api/todos", json={"text": "x"}).status_code == 400
+    assert client.put("/api/settings", json={"vault": {"path": "../etc"}}).status_code == 400
+    assert client.put("/api/settings", json={"vault": {"path": "nope"}}).status_code == 400
+    assert client.get("/api/settings/folders", params={"path": "../.."}).status_code == 400
+
+
+def test_provider_connection_check(env):
+    client, _, _ = env
+    seen = []
+
+    def handler(request: httpx.Request):
+        seen.append(dict(request.headers))
+        return httpx.Response(200, json={"data": [{"id": "gpt-b"}, {"id": "gpt-a"}]})
+
+    OpenAICompatProvider.transport = httpx.MockTransport(handler)
+    try:
+        # api_key left out: the saved one is used
+        result = client.post("/api/settings/test", json={"id": "portkey", "kind": "portkey",
+                                                         "base_url": "https://gw.example/v1"}).json()
+    finally:
+        OpenAICompatProvider.transport = None
+    assert result["ok"] and result["models"] == ["gpt-a", "gpt-b"]
+    assert seen[0]["x-portkey-api-key"] == "pk-test"

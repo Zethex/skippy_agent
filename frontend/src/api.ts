@@ -7,7 +7,7 @@ export type Status = {
   providers: ProviderInfo[];
   default_provider: string | null;
   sass_levels: string[];
-  vault: { available: boolean; writable: boolean; folder: string; notes: number };
+  vault: { available: boolean; writable: boolean; folder: string; notes: number; name: string; path: string };
   voice: { available: boolean; model: string };
 };
 export type Conversation = { id: string; title: string; updated_at: number };
@@ -77,3 +77,38 @@ export async function* streamChat(
   }
   if (buffer.trim()) yield JSON.parse(buffer) as ChatEvent;
 }
+
+// ---- settings ------------------------------------------------------------------
+export type ProviderKind = "claude_code" | "portkey" | "openai_compat";
+/** Secrets come back only as `<name>_set` flags. In a draft, a secret that is `undefined` keeps
+ *  the saved value, "" clears it, and any other string replaces it. */
+export type ProviderSettings = {
+  id: string; label: string; kind: ProviderKind; enabled: boolean; models: string[];
+  oauth_token?: string; oauth_token_set?: boolean;
+  base_url?: string; api_key?: string; api_key_set?: boolean; tools?: boolean; verify_tls?: boolean;
+  virtual_key?: string; virtual_key_set?: boolean; config?: string; gateway_provider?: string;
+  headers?: Record<string, string>;
+};
+export type SettingsDoc = {
+  profile: { user_name: string; whisper_model: string };
+  vault: { path: string; folder: string; writable: boolean };
+  providers: ProviderSettings[];
+  default_provider: string;
+  vaults_root: string;
+  vaults_root_available: boolean;
+  claude_cli: boolean;
+  whisper_models: string[];
+};
+export type VaultInfo = { path: string; name: string };
+export type FolderListing = { path: string; is_vault: boolean; folders: { path: string; name: string; vault: boolean }[] };
+export type CheckResult = { ok: boolean; message: string; models?: string[] };
+
+export const settingsApi = {
+  get: () => request<SettingsDoc>("/api/settings"),
+  save: (doc: Partial<SettingsDoc>) =>
+    request<SettingsDoc>("/api/settings", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(doc) }),
+  test: (p: ProviderSettings) => post<CheckResult>("/api/settings/test", p),
+  vaults: () => request<VaultInfo[]>("/api/settings/vaults"),
+  folders: (path: string) => request<FolderListing>(`/api/settings/folders?path=${encodeURIComponent(path)}`),
+  createVault: (parent: string, name: string) => post<{ path: string }>("/api/settings/vaults", { parent, name }),
+};

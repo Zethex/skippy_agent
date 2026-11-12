@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import re
+import shutil
 from datetime import datetime
 
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -15,6 +17,8 @@ from .config import Settings
 from .db import DB
 from .persona import SASS_LEVELS, build_system_prompt
 from .providers import ChatRequest, Registry
+from .settings_store import (WHISPER_MODELS, SettingsError, SettingsStore, clean_rel, create_vault, find_vaults,
+                             list_folders, normalise_provider, runtime_provider)
 from .stt import Transcriber
 from .vault import Vault, VaultError
 
@@ -46,28 +50,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or Settings.from_env()
     app = FastAPI(title="Skippy", version=__version__)
     db = DB(settings.data_dir / "skippy.db")
-    vault = Vault(settings.vault_path, settings.vault_folder, settings.vault_write)
-    registry = Registry(settings.load_provider_config(), settings.default_provider)
-    stt = Transcriber(settings.whisper_model, settings.data_dir / "whisper")
-    app.state.registry, app.state.vault, app.state.db = registry, vault, db
+    store = SettingsStore(settings.data_dir / "settings.json", settings.seed)
+    vaults_root = settings.vaults_dir
+    app.state.db, app.state.store, app.state.stt = db, store, None
+
+    def apply_settings() -> None:
+        """(Re)build the vault, providers and voice from the stored settings. Runs on every save,
+        so changes in the Settings screen take effect without restarting the container."""
+        cfg = store.data
+        rel = cfg["vault"]["path"]
+        path = (vaults_root if rel == "." else vaults_root / rel) if rel else vaults_root / ".no-vault-selected"
+        app.state.vault = Vault(path, cfg["vault"]["folder"], cfg["vault"]["writable"])
+        app.state.vault_rel = rel
+        app.state.registry = Registry([runtime_provider(p) for p in cfg["providers"] if p["enabled"]],
+                                      cfg["default_provider"])
+        app.state.user_name = cfg["profile"]["user_name"]
+        whisper = cfg["profile"]["whisper_model"]
+        if app.state.stt is None or app.state.stt.model_name != whisper:
+            app.state.stt = Transcriber(whisper, settings.data_dir / "whisper")
+
+    apply_settings()
 
     @app.exception_handler(VaultError)
     async def vault_error(_request, exc: VaultError):
         return JSONResponse({"detail": str(exc)}, status_code=400)
 
+    @app.exception_handler(SettingsError)
+    async def settings_error(_request, exc: SettingsError):
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+
     # ---- status -------------------------------------------------------------
     @app.get("/api/status")
     def status():
+        vault = app.state.vault
         return {
             "version": __version__,
-            "user_name": settings.user_name,
-            "providers": [p.describe() for p in registry.providers.values()],
-            "default_provider": registry.default_id(),
+            "user_name": app.state.user_name,
+            "providers": [p.describe() for p in app.state.registry.providers.values()],
+            "default_provider": app.state.registry.default_id(),
             "sass_levels": SASS_LEVELS,
-            "vault": {"available": vault.available, "writable": vault.writable,
-                      "folder": vault.folder, "notes": vault.note_count()},
-            "voice": {"available": stt.available, "model": settings.whisper_model},
+            "vault": {"available": vault.available, "writable": vault.writable, "folder": vault.folder,
+                      "notes": vault.note_count(), "name": vault.root.name if vault.available else "",
+                      "path": app.state.vault_rel},
+            "voice": {"available": app.state.stt.available, "model": app.state.stt.model_name},
         }
+
+    # ---- settings -----------------------------------------------------------
+    @app.get("/api/settings")
+    def get_settings():
+        return {**store.public(), "vaults_root": os.environ.get("SKIPPY_VAULTS_HOST") or str(vaults_root),
+                "vaults_root_available": vaults_root.is_dir(),
+                "claude_cli": bool(shutil.which("claude")), "whisper_models": list(WHISPER_MODELS)}
+
+    @app.put("/api/settings")
+    def put_settings(body: dict = Body(...)):
+        rel = (body.get("vault") or {}).get("path")
+        if rel:
+            rel = clean_rel(rel)
+            target = vaults_root if rel == "." else vaults_root / rel
+            if not target.is_dir():
+                raise SettingsError(f"There's no folder called {rel} in the mounted folder")
+        store.update(body)
+        apply_settings()
+        return get_settings()
+
+    @app.post("/api/settings/test")
+    async def test_provider(body: dict = Body(...)):
+        """Try a provider as currently typed in the form; blank secrets fall back to the saved ones."""
+        merged = store.merge_secrets(body, store.provider(str(body.get("id") or "")))
+        cfg = normalise_provider(merged)
+        if not cfg:
+            raise SettingsError("Unknown provider type")
+        provider = Registry([runtime_provider(cfg)]).providers[cfg["id"]]
+        return await provider.check()
+
+    @app.get("/api/settings/vaults")
+    def list_vaults():
+        return find_vaults(vaults_root)
+
+    @app.get("/api/settings/folders")
+    def browse(path: str = "."):
+        return list_folders(vaults_root, path)
+
+    @app.post("/api/settings/vaults")
+    def new_vault(body: dict = Body(...)):
+        return {"path": create_vault(vaults_root, str(body.get("parent") or "."), str(body.get("name") or ""))}
 
     # ---- conversations ------------------------------------------------------
     @app.get("/api/conversations")
@@ -101,7 +168,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             lines += [f"## {'Me' if m['role'] == 'user' else 'Skippy'}", "", m["content"], ""]
         safe = re.sub(r'[\\/:*?"<>|#^\[\]]', " ", conv["title"]).strip()[:80] or "Chat"
         day = datetime.fromtimestamp(conv["created_at"]).strftime("%Y-%m-%d")
-        path = vault.write(f"{vault.folder}/Chats/{day} {safe}.md", "\n".join(lines), overwrite=True)
+        path = app.state.vault.write(f"{app.state.vault.folder}/Chats/{day} {safe}.md", "\n".join(lines), overwrite=True)
         return {"path": path}
 
     # ---- chat ---------------------------------------------------------------
@@ -110,9 +177,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         text = body.message.strip()
         if not text:
             raise HTTPException(400, "Message is empty")
-        provider = registry.get(body.provider)
+        provider = app.state.registry.get(body.provider)
         if provider is None:
-            raise HTTPException(400, "No AI provider is available. Add credentials to .env and restart.")
+            raise HTTPException(400, "No AI provider is available. Add one in Settings.")
         ok, reason = provider.availability()
         if not ok:
             raise HTTPException(400, f"{provider.label} is not available: {reason}")
@@ -125,8 +192,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         history = [{"role": m["role"], "content": m["content"]} for m in db.messages(conv["id"])[-HISTORY_LIMIT:]]
         model = body.model if body.model in provider.models else (provider.models[0] if provider.models else None)
         request = ChatRequest(
-            system=build_system_prompt(body.sass, settings.user_name, vault, provider.tool_style),
-            messages=history, model=model, vault=vault)
+            system=build_system_prompt(body.sass, app.state.user_name, app.state.vault, provider.tool_style),
+            messages=history, model=model, vault=app.state.vault)
 
         async def events():
             def line(obj: dict) -> bytes:
@@ -153,42 +220,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # ---- voice --------------------------------------------------------------
     @app.post("/api/transcribe")
     async def transcribe(audio: UploadFile = File(...)):
-        if not stt.available:
+        if not app.state.stt.available:
             raise HTTPException(503, "Voice input is not installed in this image (build with INSTALL_WHISPER=true)")
         data = await audio.read()
         if len(data) < 800:
             return {"text": ""}
         try:
-            return {"text": await run_in_threadpool(stt.transcribe, data)}
+            return {"text": await run_in_threadpool(app.state.stt.transcribe, data)}
         except Exception as exc:
             raise HTTPException(500, f"Could not transcribe audio: {exc}") from exc
 
     # ---- vault --------------------------------------------------------------
     @app.get("/api/vault/search")
     def vault_search(q: str = ""):
-        return vault.search(q, limit=20)
+        return app.state.vault.search(q, limit=20)
 
     @app.get("/api/vault/note")
     def vault_note(path: str):
-        return {"path": path, "content": vault.read(path)}
+        return {"path": path, "content": app.state.vault.read(path)}
 
     @app.get("/api/todos")
     def todos():
-        return vault.list_todos()
+        return app.state.vault.list_todos()
 
     @app.post("/api/todos")
     def add_todo(body: TodoBody):
-        vault.add_todo(body.text)
-        return vault.list_todos()
+        app.state.vault.add_todo(body.text)
+        return app.state.vault.list_todos()
 
     @app.post("/api/todos/toggle")
     def toggle_todo(body: TodoToggle):
-        vault.set_todo(body.line, body.done)
-        return vault.list_todos()
+        app.state.vault.set_todo(body.line, body.done)
+        return app.state.vault.list_todos()
 
     @app.post("/api/capture")
     def capture(body: TodoBody):
-        return {"path": vault.capture(body.text)}
+        return {"path": app.state.vault.capture(body.text)}
 
     # ---- web UI -------------------------------------------------------------
     index = settings.static_dir / "index.html"

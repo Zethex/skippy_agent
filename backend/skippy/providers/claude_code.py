@@ -1,5 +1,5 @@
 """Claude via the Claude Code CLI in headless mode, so a Pro/Max subscription works
-without an API key. Auth comes from CLAUDE_CODE_OAUTH_TOKEN (`claude setup-token`).
+without an API key. Auth is the token from `claude setup-token`, entered in Settings (or CLAUDE_CODE_OAUTH_TOKEN).
 
 The CLI runs with the vault as its working directory and only its file tools enabled,
 which is how this provider reads and writes the second brain.
@@ -41,17 +41,52 @@ class ClaudeCodeProvider(Provider):
     def __init__(self, cfg: dict):
         super().__init__(cfg)
         self.binary = cfg.get("binary") or "claude"
+        self.oauth_token = cfg.get("oauth_token") or ""
         if not self.models:
             self.models = ["sonnet", "opus", "haiku"]
+
+    def _env(self) -> dict:
+        env = dict(os.environ)
+        if self.oauth_token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = self.oauth_token
+        return env
 
     def availability(self) -> tuple[bool, str]:
         if not shutil.which(self.binary):
             return False, "The Claude Code CLI is not installed in this image"
-        has_auth = (os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
+        has_auth = (self.oauth_token or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or os.environ.get("ANTHROPIC_API_KEY")
                     or (Path.home() / ".claude" / ".credentials.json").exists())
         if not has_auth:
-            return False, "Set CLAUDE_CODE_OAUTH_TOKEN in .env (run `claude setup-token` to get one)"
+            return False, "Add your subscription token in Settings"
         return True, ""
+
+    async def check(self) -> dict:
+        ok, reason = self.availability()
+        if not ok:
+            return {"ok": False, "message": reason}
+        scratch = tempfile.mkdtemp(prefix="skippy-check-")
+        cmd = [self.binary, "-p", "Reply with exactly: OK", "--output-format", "json", "--tools", "",
+               "--no-session-persistence", "--strict-mcp-config", "--disable-slash-commands",
+               "--model", self.models[-1] if "haiku" not in self.models else "haiku"]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, cwd=scratch, env=self._env(), stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            try:
+                out, err = await asyncio.wait_for(proc.communicate(), timeout=90)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return {"ok": False, "message": "Claude didn't answer within 90 seconds"}
+        finally:
+            shutil.rmtree(scratch, ignore_errors=True)
+        try:
+            result = json.loads(out.decode("utf-8", errors="replace").strip().splitlines()[-1])
+        except (ValueError, IndexError):
+            detail = (err or out).decode("utf-8", errors="replace").strip()[-400:]
+            return {"ok": False, "message": detail or f"Claude Code exited with status {proc.returncode}"}
+        if result.get("is_error"):
+            return {"ok": False, "message": str(result.get("result") or result.get("subtype") or "Claude returned an error")}
+        return {"ok": True, "message": "Connected. Claude answered using your subscription."}
 
     async def stream(self, req: ChatRequest):
         vault = req.vault if req.vault and req.vault.available else None
@@ -70,7 +105,7 @@ class ClaudeCodeProvider(Provider):
 
         scratch = None if vault else tempfile.mkdtemp(prefix="skippy-")
         proc = await asyncio.create_subprocess_exec(
-            *cmd, cwd=str(vault.root) if vault else scratch,
+            *cmd, cwd=str(vault.root) if vault else scratch, env=self._env(),
             stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE, limit=16 * 1024 * 1024)
         stderr_task = asyncio.create_task(proc.stderr.read())

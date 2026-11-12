@@ -24,7 +24,7 @@ COPY backend/requirements.txt backend/requirements-voice.txt ./
 RUN pip install -r requirements.txt \
  && if [ "$INSTALL_WHISPER" = "true" ]; then pip install -r requirements-voice.txt; fi
 
-RUN useradd --create-home --uid 1000 skippy && mkdir -p /data /vault && chown skippy:skippy /data /vault
+RUN useradd --create-home --uid 1000 skippy && mkdir -p /data /vaults && chown skippy:skippy /data /vaults
 USER skippy
 ENV HOME=/home/skippy PATH=/home/skippy/.local/bin:$PATH
 
