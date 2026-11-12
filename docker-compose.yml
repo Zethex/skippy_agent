@@ -1,0 +1,21 @@
+services:
+  skippy:
+    build:
+      context: .
+      args:
+        INSTALL_CLAUDE_CODE: ${INSTALL_CLAUDE_CODE:-true}
+        INSTALL_WHISPER: ${INSTALL_WHISPER:-true}
+    image: skippy:local
+    container_name: skippy
+    env_file: .env
+    ports:
+      # Bound to localhost only: Skippy has no login and can write to your vault.
+      - "127.0.0.1:${SKIPPY_PORT:-8642}:8642"
+    volumes:
+      - skippy-data:/data                      # chat history + the Whisper model
+      - ${OBSIDIAN_VAULT:?Set OBSIDIAN_VAULT in .env to your vault folder}:/vault
+      - ./config:/app/config:ro                # provider list, editable without a rebuild
+    restart: unless-stopped
+
+volumes:
+  skippy-data:

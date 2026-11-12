@@ -1,0 +1,41 @@
+# The AIs Skippy can talk to. Values like ${NAME} come from .env; a provider whose
+# credentials are missing simply shows as "not set up" in the UI, so the same file
+# works on the home PC and the work PC.
+#
+# kind: claude_code    the Claude Code CLI, for a Claude Pro/Max subscription
+# kind: openai_compat  any OpenAI-style /chat/completions endpoint (Portkey, OpenAI, Ollama, LiteLLM)
+
+providers:
+  - id: claude-code
+    label: Claude (subscription)
+    kind: claude_code
+    models: ${CLAUDE_MODELS:-sonnet,opus,haiku}
+
+  - id: portkey
+    label: Portkey (work)
+    kind: openai_compat
+    base_url: ${PORTKEY_BASE_URL}              # e.g. https://portkey.mycorp.example/v1
+    headers:
+      x-portkey-api-key: ${PORTKEY_API_KEY}
+      x-portkey-virtual-key: ${PORTKEY_VIRTUAL_KEY}   # optional
+      x-portkey-config: ${PORTKEY_CONFIG}             # optional
+      x-portkey-provider: ${PORTKEY_PROVIDER}         # optional
+    models: ${PORTKEY_MODELS}                  # comma-separated, first is the default
+    tools: ${PORTKEY_TOOLS:-true}              # set false if a model rejects function calling
+    verify_tls: ${PORTKEY_VERIFY_TLS:-true}
+
+  # More examples. Uncomment and add the variables to .env.
+  # - id: openai
+  #   label: OpenAI
+  #   kind: openai_compat
+  #   base_url: https://api.openai.com/v1
+  #   api_key: ${OPENAI_API_KEY}
+  #   models: ${OPENAI_MODELS}
+  #
+  # - id: ollama
+  #   label: Ollama (local)
+  #   kind: openai_compat
+  #   base_url: http://host.docker.internal:11434/v1
+  #   api_key: ollama
+  #   models: ${OLLAMA_MODELS}
+  #   tools: false
