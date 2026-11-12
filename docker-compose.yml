@@ -3,9 +3,14 @@ services:
     build:
       context: .
       args:
+        # Wolfi base images; point these at your own registry mirror if you need to.
+        BASE_IMAGE: ${SKIPPY_BASE_IMAGE:-cgr.dev/chainguard/wolfi-base:latest}
+        BUILD_IMAGE: ${SKIPPY_BUILD_IMAGE:-${SKIPPY_BASE_IMAGE:-cgr.dev/chainguard/wolfi-base:latest}}
+        PYTHON_VERSION: ${SKIPPY_PYTHON_VERSION:-3.12}
+        NODE_VERSION: ${SKIPPY_NODE_VERSION:-22}
         INSTALL_CLAUDE_CODE: ${INSTALL_CLAUDE_CODE:-true}
         INSTALL_WHISPER: ${INSTALL_WHISPER:-true}
-    image: skippy:local
+    image: ${SKIPPY_IMAGE:-skippy:local}
     container_name: skippy
     env_file: .env
     environment:
